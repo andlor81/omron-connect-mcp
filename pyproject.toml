@@ -8,7 +8,7 @@ license = { text = "GPL-2.0-only" }
 authors = [{ name = "Aircon Chen" }]
 keywords = ["mcp", "omron", "blood-pressure", "health"]
 dependencies = [
-    "mcp>=1.2.0",
+    "mcp>=1.30,<2",
     "omramin @ git+https://github.com/bugficks/omramin.git@f6b6623d640cbfd78dac0e2dcbf5e908e30ab93f",
 ]
 
