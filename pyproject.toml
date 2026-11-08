@@ -9,7 +9,7 @@ authors = [{ name = "Aircon Chen" }]
 keywords = ["mcp", "omron", "blood-pressure", "health"]
 dependencies = [
     "mcp>=1.2.0",
-    "omramin @ git+https://github.com/bugficks/omramin.git",
+    "omramin @ git+https://github.com/bugficks/omramin.git@f6b6623d640cbfd78dac0e2dcbf5e908e30ab93f",
 ]
 
 [project.scripts]

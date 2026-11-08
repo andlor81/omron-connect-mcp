@@ -130,15 +130,25 @@ class OmronConnectClient:
 
     def raw_sync(self, last_sync_date: int = 0) -> T.List[T.Dict[str, T.Any]]:
         """呼叫 synchronizeMeasureData，回傳未解析的 syncList。"""
+        # 伺服器會分頁回傳：每頁帶 nextPaginationKey，要一直抓到沒有下一頁為止，
+        # 否則只會拿到最舊的一頁（跟 omramin 的 synchronizeDeviceConfData 同樣做法）。
         active = self._active
-        response = active._client.post(
-            f"{active._server}{active._APP_URL}/versions/current/{SYNC_ENDPOINT}",
-            json={"lastSyncDate": int(last_sync_date), "countOnlyFlag": 0},
-            headers=active._headers, timeout=60,
-        )
-        response.raise_for_status()
-        payload = response.json().get("returnedValue") or {}
-        return payload.get("syncList") or []
+        key = int(last_sync_date)
+        out: T.List[T.Dict[str, T.Any]] = []
+        for _ in range(500):  # 安全上限，避免伺服器回同一個 key 時無限迴圈
+            response = active._client.post(
+                f"{active._server}{active._APP_URL}/versions/current/{SYNC_ENDPOINT}",
+                json={"lastSyncDate": key, "countOnlyFlag": 0},
+                headers=active._headers, timeout=60,
+            )
+            response.raise_for_status()
+            payload = response.json().get("returnedValue") or {}
+            out.extend(payload.get("syncList") or [])
+            next_key = int(payload.get("nextPaginationKey") or 0)
+            if not next_key or next_key == key:
+                break
+            key = next_key
+        return out
 
     def measurements(self, category: Category = "bpm",
                      last_sync_date: int = 0) -> T.List[T.Dict[str, T.Any]]:
