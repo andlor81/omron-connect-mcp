@@ -17,6 +17,7 @@ import dataclasses
 import datetime as _dt
 import json
 import os
+import sys
 import typing as T
 
 import omronconnect as _oc
@@ -69,6 +70,19 @@ def _read_token() -> str:
         return ""
 
 
+_AUTH_STATUS = (401, 403)
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    """True when the OMRON server rejected the session (expired access token).
+
+    httpx.HTTPStatusError, raised both by our own raise_for_status() and inside
+    omramin, carries the response; checking the attribute avoids importing httpx.
+    """
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) in _AUTH_STATUS
+
+
 def _write_token(refresh_token: str) -> None:
     path = _token_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -119,17 +133,40 @@ class OmronConnectClient:
             raise OmronError("尚未連線")
         return active
 
+    def _call(self, fn: T.Callable[[], T.Any]) -> T.Any:
+        """Run fn; if OMRON rejects the session, log in again and retry once.
+
+        A long-running server (e.g. behind an HTTP proxy) keeps one session for
+        hours. When OMRON expires its access token every call fails with 401/403
+        until the process restarts. connect() renews via the refresh token, or
+        falls back to the password. fn must read self._client / self._active at
+        call time so the retry uses the new session.
+        """
+        if self._client is None:
+            self.connect()
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - only auth errors are retried
+            if not _is_auth_error(exc):
+                raise
+            print(f"omron-connect-mcp: session rejected ({exc.response.status_code}), "
+                  "logging in again", file=sys.stderr, flush=True)
+            self._client = None
+            self.connect()
+            return fn()
+
     # --- 資料 -------------------------------------------------------------
 
     def devices(self) -> T.List[T.Dict[str, T.Any]]:
-        if self._client is None:
-            self.connect()
-        found = self._client.get_registered_devices(None) or []
+        found = self._call(lambda: self._client.get_registered_devices(None)) or []
         return [{"name": d.name, "category": str(d.category), "macaddr": d.macaddr,
                  "serial": d.serial, "user": d.user} for d in found]
 
     def raw_sync(self, last_sync_date: int = 0) -> T.List[T.Dict[str, T.Any]]:
         """呼叫 synchronizeMeasureData，回傳未解析的 syncList。"""
+        return self._call(lambda: self._raw_sync(last_sync_date))
+
+    def _raw_sync(self, last_sync_date: int) -> T.List[T.Dict[str, T.Any]]:
         # 伺服器會分頁回傳：每頁帶 nextPaginationKey，要一直抓到沒有下一頁為止，
         # 否則只會拿到最舊的一頁（跟 omramin 的 synchronizeDeviceConfData 同樣做法）。
         active = self._active
