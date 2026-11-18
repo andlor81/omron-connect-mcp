@@ -22,6 +22,25 @@ def _get() -> OmronConnectClient:
     return _client
 
 
+# OMRON's lastSyncDate (UTC epoch ms) limits how much history the server sends.
+# Without it every call pages through the whole account history, which takes
+# seconds and, together with a re-login, can exceed the client's timeout.
+SYNC_MARGIN_DAYS = 3      # covers time zones and late uploads; rows are still filtered by date
+LATEST_WINDOW_DAYS = 30   # omron_latest looks this far back first, then falls back to everything
+
+
+def _since_ms(start_date: str) -> int:
+    """lastSyncDate for a start date: midnight UTC SYNC_MARGIN_DAYS earlier; 0 = all history."""
+    if not start_date:
+        return 0
+    try:
+        day = _dt.date.fromisoformat(start_date)
+    except ValueError:
+        return 0
+    day -= _dt.timedelta(days=SYNC_MARGIN_DAYS)
+    return int(_dt.datetime.combine(day, _dt.time(), _dt.timezone.utc).timestamp() * 1000)
+
+
 def _in_range(rows: T.List[dict], start: str, end: str) -> T.List[dict]:
     """用當地日期字串過濾。measured_at 已經是帶時區的 ISO 字串。"""
     return [r for r in rows if start <= r["measured_at"][:10] <= end]
@@ -52,13 +71,14 @@ def omron_blood_pressure(start_date: str = "", end_date: str = "") -> dict:
     """取血壓紀錄。
 
     Args:
-        start_date: 起始日 YYYY-MM-DD，留空代表不限。
+        start_date: 起始日 YYYY-MM-DD，留空代表不限。Set it whenever possible:
+            without it the whole account history is downloaded, which is slow.
         end_date: 結束日 YYYY-MM-DD，留空代表今天。
 
     回傳每筆的 systolic、diastolic、pulse，以及 irregularHB、movementDetect、
     cuffWrapDetect 三個量測品質旗標。
     """
-    rows = _get().measurements("bpm")
+    rows = _get().measurements("bpm", _since_ms(start_date))
     rows = _in_range(rows, start_date or "0000-01-01", end_date or _today())
     return {"count": len(rows), "measurements": rows}
 
@@ -68,10 +88,11 @@ def omron_weight(start_date: str = "", end_date: str = "") -> dict:
     """取體重與體組成紀錄（OMRON 體重計）。
 
     Args:
-        start_date: 起始日 YYYY-MM-DD，留空代表不限。
+        start_date: 起始日 YYYY-MM-DD，留空代表不限。Set it whenever possible:
+            without it the whole account history is downloaded, which is slow.
         end_date: 結束日 YYYY-MM-DD，留空代表今天。
     """
-    rows = _get().measurements("scale")
+    rows = _get().measurements("scale", _since_ms(start_date))
     rows = _in_range(rows, start_date or "0000-01-01", end_date or _today())
     return {"count": len(rows), "measurements": rows}
 
@@ -85,7 +106,10 @@ def omron_latest(category: str = "bpm") -> dict:
     """
     if category not in ("bpm", "scale"):
         return {"error": "category 只接受 'bpm' 或 'scale'"}
-    rows = _get().measurements(category)  # type: ignore[arg-type]
+    recent = (_dt.date.today() - _dt.timedelta(days=LATEST_WINDOW_DAYS)).isoformat()
+    rows = _get().measurements(category, _since_ms(recent))  # type: ignore[arg-type]
+    if not rows:  # nothing recent: look through the whole history once
+        rows = _get().measurements(category)  # type: ignore[arg-type]
     if not rows:
         return {"found": False, "category": category}
     return {"found": True, "category": category, "measurement": rows[-1]}
